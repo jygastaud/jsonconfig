@@ -1,0 +1,451 @@
+<?php
+
+define('jsonCONFIG_CREATE', 'create');
+define('jsonCONFIG_REFRESH', 'refresh');
+define('jsonCONFIG_DISABLE', 'disable');
+define('jsonCONFIG_UNINSTALL', 'uninstall');
+define('jsonCONFIG_DISPLAY', 'display');
+define('jsonCONFIG_LIST', 'list');
+define('jsonCONFIG_EXPORT', 'export');
+
+function jsonconfig_permission() {
+  return array(
+    'jsonconfig refresh' => array(
+      'title' => t('Refresh the managed configuration'),
+      'restrict access' => TRUE,
+    ),
+    'jsonconfig_export' => array(
+      'title' => t('Export managed configuration'),
+      'restrict access' => TRUE,
+    )
+  );
+}
+
+function jsonconfig_menu() {
+  return array(
+    'admin/config/development/json' => array(
+      'title' => 'Managed Configuration',
+      'access arguments' => array('jsonconfig refresh'),
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('jsonconfig_admin_status_page'),
+      'file' => 'jsonconfig.admin.inc',
+    ),
+    'admin/config/development/json/export' => array(
+      'title' => 'Export',
+      'access arguments' => array('jsonconfig export'),
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('jsonconfig_admin_export_page'),
+      'file' => 'jsonconfig.admin.inc',
+      'type' => MENU_LOCAL_TASK,
+    )
+  );
+}
+
+function jsonconfig_stored_value_replacement($type, &$location) {
+  if (isset($location['ref'])) {
+    $reference = jsonconfig_retrieve_value($type, $location['ref']);
+    unset($location['ref']);
+    $location += $reference;
+  }
+}
+
+function jsonconfig_jsonconfig_handlers() {
+  return array(
+    'var' => array(
+      'weight' => 0,
+    ),
+    'ldap_server' => array(
+      'weight' => 0,
+    ),
+    'language' => array(
+      'weight' => -20,
+    ),
+    'role' => array(
+      'weight' => 0,
+    ),
+    'vocabulary' => array(
+      'weight' => 50,
+    ),
+    'field' => array(
+      'weight' => 100,
+    ),
+    'node_type' => array(
+      'weight' => 500,
+    ),
+    'bean' => array(
+      'weight' => 500,
+    ),
+    'text_format' => array(
+      'weight' => 4000,
+    ),
+    'wysiwyg_profile' => array(
+      'weight' => 4500,
+    ),
+    'widget_instance' => array(
+      'weight' => 4600,
+    ),
+    'wysiwyg_instance' => array(
+      'weight' => 4700,
+    ),
+    'field_instance' => array(
+      'weight' => 5000,
+    ),
+    'field_replace' => array(
+      'weight' => 9500,
+    ),
+    'term' => array(
+      'weight' => 10000,
+    ),
+    'permission' => array(
+      'weight' => 20000,
+    ),
+  );
+}
+
+function jsonconfig_store_value($type, $key, $data) {
+  $q = db_merge('jsonconfig_storage');
+  $q->fields(array(
+    'type' => $type,
+    'jsonkey' => $key,
+    'jsondata' => serialize($data),
+  ));
+  $q->key(array(
+    'type' => $type,
+    'jsonkey' => $key,
+  ));
+  $res = $q->execute();
+  // clear static cache also
+  $results = drupal_static('jsonconfig_retrieve_value');
+  $results[$type][$key] = $data;
+  return $res;
+}
+
+function jsonconfig_retrieve_value($type, $key) {
+  $results = drupal_static(__FUNCTION__, array());
+  if (empty($results)) {
+    $rs = db_query('SELECT * FROM {jsonconfig_storage}');
+    foreach ($rs as $row) {
+      $results[$row->type][$row->jsonkey] = unserialize($row->jsondata);
+    }
+  }
+  if (!empty($results[$type][$key])) {
+    return $results[$type][$key];
+  }
+  return NULL;
+}
+
+function jsonconfig_export_type_list() {
+  $results = array();
+  $handlers = jsonconfig_get_handler_info();
+  foreach ($handlers as $type => $handler) {
+    if (!empty($handler['file'])) {
+      module_load_include('inc', $handler['module'], $handler['file']);
+    }
+    if (function_exists($handler[jsonCONFIG_LIST])) {
+      $results[$type] = $type;
+    }
+  }
+  return $results;
+}
+
+function jsonconfig_export_list($type = NULL) {
+  $results = array();
+  $handlers = jsonconfig_get_handler_info($type);
+  if (!empty($type)) { $handlers = array($type => $handlers); }
+  foreach ($handlers as $type => $handler) {
+    if (!empty($handler['file'])) {
+      module_load_include('inc', $handler['module'], $handler['file']);
+    }
+    if (function_exists($handler[jsonCONFIG_LIST])) {
+      $results[$type] = $handler[jsonCONFIG_LIST]();
+    }
+  }
+  drupal_alter('jsonconfig_export_list', $results);
+  return $results;
+}
+
+function jsonconfig_remove_value($type, $key) {
+  db_delete('jsonconfig_storage')
+      ->condition('type', $type)
+      ->condition('jsonkey', $key)
+      ->execute();
+}
+
+function jsonconfig_get_handler_info($type = NULL) {
+  $handlers = drupal_static(__FUNCTION__, NULL);
+  if (empty($handlers)) {
+    $handlers = array();
+    foreach (module_implements('jsonconfig_handlers') as $module) {
+      $function = $module . '_jsonconfig_handlers';
+      if (function_exists($function)) {
+        $temp_handlers = $function();
+        foreach ($temp_handlers as $key => $handler) {
+          $temp_handlers[$key] += array(
+            'module' => $module,
+            'type' => 'inc',
+            'file' => 'jsonconfig_handlers/' . $key,
+            'preprocess' => $module . '_' . $key . '_handler_preprocess',
+            'validate' => $module . '_' . $key . '_handler_validate',
+            'create' => $module . '_' . $key . '_handler_create',
+            'refresh' => $module . '_' . $key . '_handler_refresh',
+            'disable' => $module . '_' . $key . '_handler_disable',
+            'uninstall' => $module . '_' . $key . '_handler_uninstall',
+            'list' => $module . '_' . $key . '_handler_list',
+            'export' => $module . '_' . $key . '_handler_export',
+            'weight' => 0,
+          );
+        }
+        $handlers += $temp_handlers;
+      }
+    }
+  }
+  if (!empty($type)) {
+    if (isset($handlers[$type])) {
+      return $handlers[$type];
+    }
+    return FALSE;
+  }
+  return $handlers;
+}
+
+function _jsonconfig_sort_parser_weight($a, $b) {
+  $a_type = jsonconfig_get_handler_info($a);
+  $b_type = jsonconfig_get_handler_info($b);
+  return $a_type['weight'] - $b_type['weight'];
+}
+
+function jsonconfig_process_config($files, $mode = jsonCONFIG_CREATE) {
+  $context = array('mode' => $mode);
+  drupal_alter(array('jsonconfig_files'), $files, $context);
+  $objects = _jsonconfig_load_json_objects($files);
+  uksort($objects, '_jsonconfig_sort_parser_weight');
+  foreach ($objects as $type => $obj_list) {
+    $parser_info = jsonconfig_get_handler_info($type);
+    if (!empty($parser_info['file'])) {
+      module_load_include($parser_info['type'], $parser_info['module'], $parser_info['file']);
+    }
+    $validate_function = isset($parser_info['validate']) ?
+        $parser_info['validate'] : NULL;
+    if (!is_callable($validate_function)) {
+      $validate_function = TRUE;
+    }
+    $function = isset($parser_info[$mode]) ? $parser_info[$mode] : NULL;
+    $preprocess_function = isset($parser_info['preprocess']) ?
+        $parser_info['preprocess'] : NULL;
+    $preprocess = is_callable($preprocess_function);
+    if (is_callable($function)) {
+      foreach ($obj_list as $key => $obj) {
+        _jsonconfig_alter_object($type, $key, $obj, $mode);
+        $passed = TRUE;
+        if (!is_bool($validate_function)) {
+          $passed = $validate_function($obj);
+        }
+        if ($passed) {
+          if ($preprocess) {
+            $preprocess_function($obj);
+          }
+          unset($obj['file']);
+          unset($obj['module']);
+          $function($obj);
+        } else {
+          drupal_set_message(t('Invalid json object of type @type {@obj}', array(
+            '@type' => $type,
+            '@obj' => var_export($obj, TRUE),
+          )), 'error');
+        }
+      }
+    }
+  }
+}
+
+function jsonconfig_export_object($type, $object_key) {
+  $handler = jsonconfig_get_handler_info($type);
+  if (!empty($handler['file'])) {
+    module_load_include('inc', $handler['module'], $handler['file']);
+  }
+  if (function_exists($handler[jsonCONFIG_EXPORT])) {
+    return json_encode($handler[jsonCONFIG_EXPORT]($object_key));
+  }
+  return NULL;
+}
+
+function jsonconfig_admin_rebuild_export($form, &$form_state) {
+  return $form['container'];
+}
+
+function jsonconfig_display_config() {
+  $config_objects = array();
+  $files = _jsonconfig_find_all_files();
+  $context = array('mode' => jsonCONFIG_DISPLAY);
+  drupal_alter(array('jsonconfig_files'), $files, $context);
+  $objects = _jsonconfig_load_json_objects($files);
+  uksort($objects, '_jsonconfig_sort_parser_weight');
+  foreach ($objects as $type => $obj_list) {
+    $parser_info = jsonconfig_get_handler_info($type);
+    if (!empty($parser_info)) {
+      if (!empty($parser_info['file'])) {
+        module_load_include($parser_info['type'], $parser_info['module'], $parser_info['file']);
+      }
+      $validate_function = isset($parser_info['validate']) ?
+          $parser_info['validate'] : NULL;
+      if (!is_callable($validate_function)) {
+        $validate_function = TRUE;
+      }
+      $preprocess_function = isset($parser_info['preprocess']) ?
+          $parser_info['preprocess'] : NULL;
+      $preprocess = is_callable($preprocess_function);
+    }
+    foreach ($obj_list as $key => $obj) {
+      $object = array();
+      $object['type'] = $type;
+      $object['module'] = $obj['module'];
+      $object['parser'] = !empty($parser_info);
+      $object['file'] = $obj['file'];
+      $object['key'] = $key;
+      $object['valid'] = is_callable($validate_function) ?
+          $validate_function($obj) : TRUE;
+      $object['create'] = isset($parser_info[jsonCONFIG_CREATE]) && function_exists($parser_info[jsonCONFIG_CREATE]);
+      $object['refresh'] = isset($parser_info[jsonCONFIG_REFRESH]) && function_exists($parser_info[jsonCONFIG_REFRESH]);
+      $object['disable'] = isset($parser_info[jsonCONFIG_DISABLE]) && function_exists($parser_info[jsonCONFIG_DISABLE]);
+      $object['uninstall'] = isset($parser_info[jsonCONFIG_UNINSTALL]) && function_exists($parser_info[jsonCONFIG_UNINSTALL]);
+
+      $config_objects[] = $object;
+    }
+
+  }
+  return $config_objects;
+}
+
+function _jsonconfig_find_all_files($modules = NULL) {
+  $files = array();
+  if (!is_array($modules) || empty($modules)) {
+    $modules = module_implements('jsonconfig_directories');
+  }
+  foreach ($modules as $module) {
+    $hook = $module . '_jsonconfig_directories';
+    if (function_exists($hook)) {
+      $directories = $hook();
+      foreach ($directories as $dir) {
+        _jsonconfig_find_json_files($module, _jsonconfig_build_config_directory($module, $dir), $files);
+      }
+    }
+  }
+  return $files;
+}
+
+
+function _jsonconfig_alter_object($type, $key, &$object, $mode) {
+  $modules = module_implements('jsonconfig_object_alter');
+  foreach ($modules as $module) {
+    $hook = $module . '_jsonconfig_object_alter';
+    if (function_exists($hook)) {
+      $hook($type, $key, $object, $mode);
+    }
+  }
+}
+
+function jsonconfig_refresh_config() {
+  $jsonconfig_files = _jsonconfig_find_all_files();
+  jsonconfig_process_config($jsonconfig_files, jsonCONFIG_REFRESH);
+}
+
+function jsonconfig_modules_uninstalled($modules) {
+  // custom implementation as we need to load the module file
+  $jsonconfig_files = array();
+  foreach ($modules as $module) {
+    $dir_hook = $module . '_jsonconfig_directories';
+    // module has been disabled, need to look for the hook here
+    // this only gives a directory path so.
+    drupal_load('module', $module);
+    if (function_exists($dir_hook)) {
+      $directories = $dir_hook();
+      foreach ($directories as $dir) {
+        _jsonconfig_find_json_files($module, _jsonconfig_build_config_directory($module, $dir), $jsonconfig_files);
+      }
+    }
+  }
+  jsonconfig_process_config($jsonconfig_files, jsonCONFIG_DISABLE);
+}
+
+function jsonconfig_modules_disabled($modules) {
+  $jsonconfig_files = _jsonconfig_find_all_files($modules);
+  jsonconfig_process_config($jsonconfig_files, jsonCONFIG_DISABLE);
+}
+
+function jsonconfig_modules_enabled($modules) {
+  $jsonconfig_files = _jsonconfig_find_all_files($modules);
+  jsonconfig_process_config($jsonconfig_files, jsonCONFIG_CREATE);
+}
+
+function _jsonconfig_parse_json_objects($file) {
+  // this is really bad. don't do it. use libraries later.
+  if (!function_exists('spyc_load_file')) {
+    include DRUPAL_ROOT . '/sites/all/libraries/spyc/Spyc.php';
+  }
+  $pieces = explode('.', basename($file));
+  // assumption - each file has only one document. we need to
+  // figure out how to use multiple documents in one file here
+  $data = spyc_load_file($file);
+  return array(
+    $pieces[1] => array(
+      $pieces[2] => array(
+          'file' => $file,
+          'module' => $pieces[0],
+        ) + $data,
+    ),
+  );
+}
+
+function _jsonconfig_load_json_objects($files) {
+  $objects = array();
+  foreach ($files as $file) {
+    $conf = _jsonconfig_parse_json_objects($file);
+    foreach ($conf as $type => $obj_list) {
+      if (!isset($objects[$type])) {
+        $objects[$type] = array();
+      }
+      $objects[$type] += $obj_list;
+    }
+  }
+  return $objects;
+}
+
+function _jsonconfig_build_config_directory($module, $directory) {
+  $path = drupal_get_path('module', $module);
+  $endchar = substr($path, -1);
+  if ($endchar != '/' || $endchar != '\\') {
+   $path .= '/';
+  }
+  return DRUPAL_ROOT . '/' . $path . $directory;
+}
+
+function _jsonconfig_find_json_files($module, $directory, &$files) {
+  $last = substr($directory, -1);
+  if ($last != '/' && $last != '\\') {
+    $directory .= '/';
+  }
+  $handle = opendir($directory);
+  while (($file = readdir($handle)) !== FALSE) {
+    if (substr($file, -1) != '.') {
+      if (_jsonconfig_is_json_file($module, $file)) {
+        $files[] = $directory . $file;
+      } elseif (is_dir($directory . $file)) {
+        _jsonconfig_find_json_files($module, $directory . $file, $files);
+      }
+    }
+  }
+}
+
+function _jsonconfig_is_json_file($module, $file) {
+  $pieces = explode('.', $file);
+  if (count($pieces) < 3) {
+    return FALSE;
+  }
+  if ($pieces[0] != $module) {
+    return FALSE;
+  }
+  if ($pieces[count($pieces) - 1] != 'yml') {
+    return FALSE;
+  }
+  return TRUE;
+}

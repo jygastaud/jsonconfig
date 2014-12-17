@@ -1,0 +1,4 @@
+name = json Config
+description = "Allows for configuration to be imported via json"
+core = 7.x
+

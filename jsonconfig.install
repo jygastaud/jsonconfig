@@ -1,0 +1,50 @@
+<?php
+
+function jsonconfig_schema() {
+  return array(
+    'jsonconfig_storage' => _jsonconfig_schema_storage(),
+  );
+}
+
+/**
+ * Table definition for jsonconfig_storage
+ */
+function _jsonconfig_schema_storage() {
+  return array(
+    'fields' => array(
+      'id' => array(
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'size' => 'normal',
+      ),
+      'type' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'serialize' => FALSE,
+        'binary' => FALSE,
+      ),
+      'jsonkey' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'serialize' => FALSE,
+        'binary' => FALSE,
+      ),
+      'jsondata' => array(
+        'type' => 'blob',
+        'size' => 'normal',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+      ),
+    ),
+    'primary key' => array(
+      'id',
+    ),
+    'unique keys' => array(
+      'type_jsonkey' => array('type', 'jsonkey'),
+    ),
+    'indexes' => array(),
+  );
+}
